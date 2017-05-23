@@ -210,13 +210,24 @@ Section NockParse.
       | S skip' => log10' n' place (S newskip) skip'
       end
     end.
-*)
+ *)
+  (* this is not correct. *)
     Definition log10 (n : nat) : nat :=
       log 10 n.
 
-    Eval compute in (log10 16).
+    Eval compute in (log10 120).
 
-    Open Scope N.
+    (* Open Scope N *)
+    Open Scope nat.
+
+   
+    Opaque apply.
+
+    Fixpoint foopoint (n : nat) :=
+      match n with
+      | O => O
+      | S n' => apply (fun i => foopoint i) n'
+      end.
     
   Fixpoint lex' (s : string) (n : option N) : list token :=
     match s with
@@ -268,22 +279,7 @@ Section NockParse.
   Print Init.Nat.log2_iter.
   Print Init.Nat.log2.
 
-  Fixpoint canonize' (l : list token) (brackets : nat) {struct l} : list token :=
-    match l with
-    | h1 :: lt =>
-      match lt with
-      | h2 :: ltt =>
-        match h1, h2 with
-        | NUM _, NUM _ =>
-          h1 :: OBRAC :: canonize' lt (S brackets)
-        | CBRAC, _ => h1 :: repeat CBRAC brackets ++ canonize' ltt 0
-        | _, CBRAC => h1 :: CBRAC :: repeat CBRAC brackets ++ canonize' ltt 0
-        | _, _ => h1 :: canonize' lt brackets
-        end
-      | _ => l
-      end
-    | _ => l
-    end.
+  (* TODO: decanonize, removing as many brackets as possible *)
 
   Fixpoint explode (s : string) : list ascii :=
     match s with
@@ -306,8 +302,6 @@ Section NockParse.
   Definition nat_to_ascii (n : nat) : ascii :=
     ascii_of_nat (n + 48)%nat.    
 
-  SearchAbout (nat -> nat -> nat).
-  
   Fixpoint nat_to_string' (n : nat) (fuel : nat) : string :=
     if beq_nat n 0 then EmptyString
     else
@@ -324,9 +318,6 @@ Section NockParse.
     | _ => s
     end.
 
-  SearchAbout (N -> nat).
-
-  
   Fixpoint pretty (nn : noun) : string :=
     match nn with
     | atom x => nat_to_string (N.to_nat x)
@@ -337,40 +328,160 @@ Section NockParse.
                 (append " "
                         (append (pretty b) "]")))
     end.
-  
-  Eval compute in canonize' (lex "[1 2 3 4]") 2.
+
+  (* Applicative, for option only (for now) *)
+  Definition apure {T : Type} (x : T) : option T := Some x.
+  Definition aseq {T1 T2 : Type} (fo : option (T1 -> T2)) (xo : option T1) : option T2 :=
+    match fo, xo with
+    | None, _ => None
+    | _, None => None
+    | Some f, Some x => Some $ f x
+    end.
+
+  Notation "f <*> x" := (aseq f x) (at level 85).
+  Notation "f <$> x" := (aseq (apure f) x) (at level 84).
+ 
+  (* TODO: Polymorphic coercion?
+     Maybe this can be simulated with canonical structures *)
+
+  Fixpoint nn_insert (n : N) (nn : noun) : noun :=
+    match nn with
+    | atom n' => cell (atom n') (atom n)
+    | cell nl nr => cell nl (nn_insert n nr)
+    end.
+
+  Fixpoint nn_insert_opt (n : N) (o : option noun) : noun :=
+    match o with
+    | None => atom n
+    | Some nn => nn_insert n nn
+    end.
+
+  Definition Niszero (n : nat) : bool :=
+    match n with
+    | 0%nat => true
+    | _ => false
+    end.
+
+  Definition isnil {T : Type} (l : list T) : bool :=
+    match l with
+    | [] => true
+    | _ => false
+    end.
+
+  (* add more braces to make fully explicit *)
+  Fixpoint canonize' (l : list token) (brackets : nat) {struct l} : list token :=
+    let bkt := repeat CBRAC brackets in
+    match l with
+    | h1 :: lt =>
+      match lt with
+      | h2 :: ltt =>
+        match ltt with
+          | h3 :: lttt =>
+            match h1, h2, h3 with
+            | NUM _, NUM _, CBRAC =>
+              h1 :: h2 :: bkt ++ canonize' ltt 0
+            | NUM _, NUM _, _=>
+              h1 :: OBRAC :: canonize' lt (S brackets)
+            | CBRAC, _, _ => h1 :: bkt ++ canonize' lt 0
+            | _, _, _ => h1 :: canonize' lt brackets
+            end
+          | _ => l ++ bkt
+        end
+      | _ => l ++ bkt
+      end
+    | _ => l ++ bkt
+    end.
+
+  Definition canonize (l : list token) : list token :=
+    canonize' l 0.
+
+
+  Eval compute in (canonize (lex "[1 2 3 4]")).
+ 
+  (* only works on canonized things *)
+  (* idea: left stores things we've already seen but can't
+     quite output yet, default stores whether we return none
+     or a designated cell when we run out of list
+   *)
+
+  Print positive.
+  SearchAbout list.
+
+  Eval compute in (pretty 900).
+
+  (* This is getting things backwards sometimes *)
   Fixpoint parse'
            (l : list token)
            (depth : nat)
-           (lefts : list noun) : option noun :=
+           (lefts : list (option noun))
+    : option noun :=
     match l with
-    | [] =>
-      if N.eqb depth 0 then
+    | [] => None
+      (*if Niszero depth then
         match lefts with
-        | lh :: lefts' => Some lh
+        | Some lh :: [] => Some lh
         | _ => None
-      else None
+        end
+      else None *)
     | t :: l' =>
       match t with
       | OBRAC =>
-        
-        parse' l' (n + 1)
+        parse' l' (depth + 1) (None :: lefts)
       | CBRAC =>
-        if neg $ N.eqb depth 0 then
-          parse' l' current (depth - 1)
-          current
-        else 
-      | NUM n
-    end
-    | String a s' =>
-      
-    | EmptyString =>
-      match depth with
-      | O => match current with
-            |
-      | S _ => None
+        if negb $ Niszero depth then
+          match lefts with
+          | Some lh :: t =>
+            (* lookahead! *)
+            if negb $ isnil l' then
+              match parse' l' (depth - 1) t with
+              | Some n' => Some (cell lh n')
+              | _ => None
+              end
+            else Some lh
+          | None :: t => parse' l' (depth - 1) t
+          | [] => None
+          end
+        else None
+      | NUM n =>
+        (*
+        match parse' l' depth left with
+        | Some n' => Some $ cell n n'
+        | None => None
+        end *)
+        match lefts with
+        | [] => Some (atom n)
+        | lefth :: leftt =>
+          parse' l' depth (Some (nn_insert_opt n lefth) :: leftt)
+        end
       end
-      end.
+    end.
+
+  Definition parse (s : string) : option noun :=
+    parse' (canonize (lex s)) 0 [].
+  
+  Definition ex_noun1 : string := "[1 2]".
+  Eval compute in (canonize (lex ex_noun1)).
+
+  (* TODO canonize is broken but i think this is otherwise right *)
+  
+  Definition ex_noun2 : string := "1".
+
+  Definition ex_noun3 : string := "[1 [2 3] 4]".
+
+  Eval compute in (canonize (lex "[1 [2 3]]")).
+Eval compute in (parse' (lex "[1 [2 3]]") 0 []).
+  Definition ex_noun4 : string := "[[1 2] 3 4]".
+  Definition ex_noun5 : string := "[1 2 3 4]".
+  
+  Eval compute in (parse $ ex_noun1).
+  Eval compute in (parse $ ex_noun5).
+
+  Eval compute in
+      (parse' (canonize $ lex ex_noun1) 0 None).
+
+  Eval compute in (
+
+  Eval compute in (parse'
 
     Definition parse'2 :=
 
